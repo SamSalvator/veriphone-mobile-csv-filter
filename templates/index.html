@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mobile CSV Filter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero panel">
+        <p class="eyebrow">Local Veriphone Tool</p>
+        <h1>Filter a CSV down to real mobile numbers.</h1>
+        <p class="lede">
+          Upload a CSV, pick the exact phone-number column, and download a clean
+          CSV that keeps only rows Veriphone classifies as <strong>mobile</strong>.
+        </p>
+        <div class="hero-meta">
+          <span>Default country: {{ default_country_label }}</span>
+          <span>Max file size: {{ max_file_size_mb }} MB</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>1. Upload CSV</h2>
+          <p>We inspect the file first so you can confirm the correct phone column.</p>
+        </div>
+        <form id="upload-form" class="stack">
+          <label class="file-picker" for="csv-file">
+            <input id="csv-file" name="file" type="file" accept=".csv" required>
+            <span>Select CSV</span>
+          </label>
+          <button type="submit" id="inspect-button">Inspect CSV</button>
+        </form>
+        <p class="status-line" id="upload-status">Waiting for a CSV upload.</p>
+      </section>
+
+      <section class="panel hidden" id="config-panel">
+        <div class="panel-header">
+          <h2>2. Confirm phone column</h2>
+          <p>The dropdown is required even if we detect a likely phone column.</p>
+        </div>
+
+        <div class="config-grid">
+          <div class="stack">
+            <label for="phone-column">Phone number column</label>
+            <select id="phone-column"></select>
+            <div class="note">
+              <span>First data row:</span>
+              <strong id="first-data-row-label"></strong>
+            </div>
+            <div class="note">
+              <span>Country sent to Veriphone:</span>
+              <strong>{{ default_country_label }}</strong>
+            </div>
+            <button id="process-button" type="button">Run Veriphone Filter</button>
+          </div>
+
+          <div class="stack">
+            <h3>Selected column preview</h3>
+            <ul class="sample-list" id="selected-column-preview"></ul>
+          </div>
+        </div>
+
+        <div class="table-shell">
+          <h3>Sample rows</h3>
+          <div class="table-wrap">
+            <table id="sample-table"></table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="job-panel">
+        <div class="panel-header">
+          <h2>3. Processing status</h2>
+          <p>The app polls Veriphone until the export is ready.</p>
+        </div>
+
+        <div class="job-grid">
+          <div class="stack">
+            <p class="status-line" id="job-status">No active job.</p>
+            <dl class="metrics" id="job-metrics"></dl>
+          </div>
+          <div class="stack">
+            <h3>Download</h3>
+            <a class="button-link disabled" id="download-link" href="#" aria-disabled="true">Download filtered CSV</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

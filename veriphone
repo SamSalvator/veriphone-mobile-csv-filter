@@ -1,0 +1,76 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+SCRIPT_SOURCE="${0}"
+while [[ -h "$SCRIPT_SOURCE" ]]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  LINK_TARGET="$(readlink "$SCRIPT_SOURCE")"
+  if [[ "$LINK_TARGET" == /* ]]; then
+    SCRIPT_SOURCE="$LINK_TARGET"
+  else
+    SCRIPT_SOURCE="$SOURCE_DIR/$LINK_TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+VENV_DIR="$SCRIPT_DIR/.venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  veriphone start   Start the local Veriphone app
+  veriphone test    Run the local test suite
+  veriphone path    Show the project folder
+  veriphone help    Show this help message
+EOF
+}
+
+bootstrap_environment() {
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Creating the Veriphone local environment..."
+    python3 -m venv "$VENV_DIR"
+  fi
+
+  if ! "$PYTHON_BIN" -c "import flask, pandas, requests, dotenv" >/dev/null 2>&1; then
+    echo "Installing Veriphone dependencies..."
+    "$PIP_BIN" install -r "$SCRIPT_DIR/requirements.txt"
+  fi
+}
+
+warn_if_env_missing() {
+  if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
+    echo "Note: $SCRIPT_DIR/.env is missing."
+    echo "The app will start, but you need VERIPHONE_API_KEY in .env before running real jobs."
+  fi
+}
+
+COMMAND="${1:-help}"
+
+case "$COMMAND" in
+  start)
+    bootstrap_environment
+    warn_if_env_missing
+    echo "Starting Veriphone Mobile CSV Filter at http://127.0.0.1:5000"
+    cd "$SCRIPT_DIR"
+    exec "$PYTHON_BIN" app.py
+    ;;
+  test)
+    bootstrap_environment
+    cd "$SCRIPT_DIR"
+    exec "$PYTHON_BIN" -m unittest discover -s tests -v
+    ;;
+  path)
+    echo "$SCRIPT_DIR"
+    ;;
+  help|-h|--help|"")
+    print_usage
+    ;;
+  *)
+    echo "Unknown command: $COMMAND" >&2
+    print_usage >&2
+    exit 1
+    ;;
+esac
