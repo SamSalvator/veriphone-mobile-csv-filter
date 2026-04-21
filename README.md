@@ -26,13 +26,16 @@ The production deployment is designed for Vercel:
 - CSV uploads go directly from the browser to Vercel Blob so large files do not hit Vercel's 4.5 MB function body limit.
 - The Flask app stores normalized CSVs, job manifests, and exports in Vercel Blob instead of local disk.
 - Completed exports are streamed back from Blob through the app.
+- A daily Vercel cron deletes uploads, manifests, and filtered exports after 7 days.
 
 To run the hosted version, the Vercel project needs:
 
 - `VERIPHONE_API_KEY`
 - a connected private Vercel Blob store, which injects `BLOB_READ_WRITE_TOKEN`
+- `CRON_SECRET` so Vercel can securely call the retention endpoint
 
 The repo includes a Vercel upload-token route at `/api/blob-upload` for secure client uploads.
+The retention cron calls `/api/cron/blob-retention` once per day and removes Blob artifacts older than 7 days.
 
 ## Setup
 
@@ -91,3 +94,4 @@ veriphone test
 - Rows with syntax errors are excluded from the output because only strict `mobile` rows are kept.
 - If Veriphone returns unexpected CSV headers, the backend maps common aliases and fails with a clear error if no `phone_type` column can be found.
 - On Vercel, uploads larger than 4.5 MB are sent directly to Blob before inspection because Vercel Functions do not accept larger request bodies.
+- Hosted Blob artifacts are retained for 7 days, then removed by the scheduled cleanup job.

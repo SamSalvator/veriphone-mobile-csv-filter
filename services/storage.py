@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator
 
@@ -12,6 +14,13 @@ import requests
 
 class StorageError(RuntimeError):
     """Raised when the configured storage backend cannot complete an operation."""
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    pathname: str
+    uploaded_at: datetime
+    size: int | None = None
 
 
 class StorageBackend:
@@ -40,6 +49,12 @@ class StorageBackend:
         raise NotImplementedError
 
     def stream_file(self, storage_path: str) -> tuple[Iterator[bytes], Dict[str, Any]]:
+        raise NotImplementedError
+
+    def list_objects(self, *, prefix: str) -> Iterator[StoredObject]:
+        raise NotImplementedError
+
+    def delete_objects(self, storage_paths: Iterable[str]) -> None:
         raise NotImplementedError
 
 
@@ -115,6 +130,45 @@ class LocalStorageBackend(StorageBackend):
             "content_type": "text/csv",
             "content_length": source.stat().st_size,
         }
+
+    def list_objects(self, *, prefix: str) -> Iterator[StoredObject]:
+        normalized_prefix = prefix.strip("/")
+        if normalized_prefix:
+            normalized_prefix = f"{normalized_prefix}/"
+        for path in self.root.rglob("*"):
+            if not path.is_file():
+                continue
+
+            relative_path = path.relative_to(self.root).as_posix()
+            if normalized_prefix and not relative_path.startswith(normalized_prefix):
+                continue
+
+            stats = path.stat()
+            yield StoredObject(
+                pathname=relative_path,
+                uploaded_at=datetime.fromtimestamp(stats.st_mtime, tz=timezone.utc),
+                size=stats.st_size,
+            )
+
+    def delete_objects(self, storage_paths: Iterable[str]) -> None:
+        for storage_path in dict.fromkeys(str(path) for path in storage_paths if str(path).strip()):
+            target = self.resolve_path(storage_path)
+            if not target.exists():
+                continue
+
+            if target.is_file():
+                target.unlink(missing_ok=True)
+                self._prune_empty_parents(target.parent)
+
+    def _prune_empty_parents(self, directory: Path) -> None:
+        root = self.root.resolve()
+        current = directory.resolve()
+        while current != root and root in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
 
 class BlobStorageBackend(StorageBackend):
@@ -254,3 +308,24 @@ class BlobStorageBackend(StorageBackend):
             "content_length": metadata.size,
             "cache_control": "private, no-store",
         }
+
+    def list_objects(self, *, prefix: str) -> Iterator[StoredObject]:
+        try:
+            for blob in self.client.iter_objects(prefix=prefix, batch_size=1000):
+                yield StoredObject(
+                    pathname=blob.pathname,
+                    uploaded_at=blob.uploaded_at,
+                    size=blob.size,
+                )
+        except self._blob_error_type as error:
+            raise StorageError(str(error)) from error
+
+    def delete_objects(self, storage_paths: Iterable[str]) -> None:
+        paths = [str(path) for path in dict.fromkeys(storage_paths) if str(path).strip()]
+        if not paths:
+            return
+
+        try:
+            self.client.delete(paths)
+        except self._blob_error_type as error:
+            raise StorageError(str(error)) from error

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
@@ -13,6 +14,7 @@ from werkzeug.utils import secure_filename
 
 from services.csv_normalizer import CSVNormalizationError, normalize_csv_for_veriphone
 from services.csv_inspector import CSVInspectionError, inspect_csv
+from services.retention import purge_expired_objects
 from services.result_filter import ResultProcessingError, filter_verified_results
 from services.storage import BlobStorageBackend, LocalStorageBackend, StorageBackend, StorageError
 from services.veriphone_client import VeriphoneAPIError, VeriphoneClient
@@ -22,6 +24,7 @@ TMP_ROOT = APP_ROOT / ".tmp"
 DEFAULT_COUNTRY = "US"
 MAX_FILE_SIZE_MB = 1024
 LARGE_TRANSFER_THRESHOLD_BYTES = 4_500_000
+RETENTION_DAYS = 7
 
 
 class ConfigurationError(RuntimeError):
@@ -52,6 +55,30 @@ def create_app() -> Flask:
     @app.get("/favicon.ico")
     def favicon() -> tuple[str, int]:
         return ("", 204)
+
+    @app.get("/api/cron/blob-retention")
+    def run_blob_retention() -> Any:
+        try:
+            _authorize_cron_request()
+            storage = _storage_backend()
+            summary = purge_expired_objects(
+                storage,
+                now=datetime.now(timezone.utc),
+                retention_days=RETENTION_DAYS,
+            )
+            return jsonify(
+                {
+                    "status": "success",
+                    "storage_backend": "blob" if storage.is_blob else "local",
+                    **summary,
+                }
+            )
+        except ConfigurationError as error:
+            return _api_error(str(error), 500)
+        except PermissionError:
+            return _api_error("Unauthorized.", 401)
+        except StorageError as error:
+            return _api_error(str(error), 500)
 
     @app.post("/api/uploads/inspect")
     def inspect_upload() -> Any:
@@ -491,6 +518,18 @@ def _build_client() -> VeriphoneClient:
             "VERIPHONE_API_KEY is missing. Add it to the deployment environment before running jobs."
         )
     return VeriphoneClient(api_key=api_key)
+
+
+def _authorize_cron_request() -> None:
+    cron_secret = os.getenv("CRON_SECRET", "").strip()
+    if not cron_secret:
+        raise ConfigurationError(
+            "CRON_SECRET is missing. Add it to the Vercel project so scheduled cleanup can run securely."
+        )
+
+    auth_header = request.headers.get("authorization", "")
+    if auth_header != f"Bearer {cron_secret}":
+        raise PermissionError("Unauthorized.")
 
 
 @lru_cache(maxsize=1)
