@@ -172,11 +172,35 @@ class BlobStorageBackend(StorageBackend):
 
     def download_file(self, storage_path: str, destination: Path) -> Path:
         try:
-            return Path(self.client.download_file(storage_path, destination))
+            metadata = self.client.head(storage_path)
         except self._not_found_type as error:
             raise FileNotFoundError(storage_path) from error
         except self._blob_error_type as error:
             raise StorageError(str(error)) from error
+
+        response = requests.get(
+            metadata.url,
+            headers={"Authorization": f"Bearer {self.token}"},
+            stream=True,
+            timeout=120,
+        )
+        try:
+            response.raise_for_status()
+        except requests.RequestException as error:
+            response.close()
+            raise StorageError(f"Could not download {storage_path} from Vercel Blob.") from error
+
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with destination.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+        finally:
+            response.close()
+
+        return destination
 
     def write_json(self, storage_path: str, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
