@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator
 
@@ -191,14 +192,10 @@ class BlobStorageBackend(StorageBackend):
             raise StorageError(str(error)) from error
 
     def read_json(self, storage_path: str) -> Dict[str, Any]:
-        try:
-            payload = self.client.get(storage_path)
-        except self._not_found_type as error:
-            raise FileNotFoundError(storage_path) from error
-        except self._blob_error_type as error:
-            raise StorageError(str(error)) from error
-
-        return json.loads(payload.decode("utf-8"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "payload.json"
+            downloaded = self.download_file(storage_path, destination)
+            return json.loads(downloaded.read_text(encoding="utf-8"))
 
     def stream_file(self, storage_path: str) -> tuple[Iterator[bytes], Dict[str, Any]]:
         try:

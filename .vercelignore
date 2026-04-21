@@ -1,0 +1,10 @@
+.git
+.venv
+.vercel
+.tmp
+.env
+.env.local
+.env*.local
+.python-version
+uv.lock
+tests
