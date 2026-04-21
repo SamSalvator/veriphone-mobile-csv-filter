@@ -1,0 +1,7 @@
+{
+  "name": "veriphone-mobile-csv-filter",
+  "private": true,
+  "dependencies": {
+    "@vercel/blob": "^2.3.3"
+  }
+}

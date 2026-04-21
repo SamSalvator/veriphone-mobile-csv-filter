@@ -6,10 +6,10 @@
     <title>Mobile CSV Filter</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
-  <body>
+  <body data-client-upload-enabled="{{ 'true' if client_upload_enabled else 'false' }}">
     <main class="shell">
       <section class="hero panel">
-        <p class="eyebrow">Local Veriphone Tool</p>
+        <p class="eyebrow">{{ 'Hosted Veriphone Tool' if client_upload_enabled else 'Local Veriphone Tool' }}</p>
         <h1>Filter a CSV down to real mobile numbers.</h1>
         <p class="lede">
           Upload a CSV, pick the exact phone-number column, and download a clean

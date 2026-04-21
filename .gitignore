@@ -2,6 +2,7 @@
 .venv/
 venv/
 env/
+node_modules/
 
 # Ignore environment files with secrets
 .env

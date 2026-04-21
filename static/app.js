@@ -5,6 +5,12 @@ const state = {
   pollTimer: null,
 };
 
+const appConfig = {
+  clientUploadEnabled: document.body.dataset.clientUploadEnabled === "true",
+};
+
+let blobClientPromise = null;
+
 const uploadForm = document.getElementById("upload-form");
 const csvFileInput = document.getElementById("csv-file");
 const inspectButton = document.getElementById("inspect-button");
@@ -30,16 +36,14 @@ uploadForm.addEventListener("submit", async (event) => {
   }
 
   inspectButton.disabled = true;
-  setUploadStatus(`Inspecting ${file.name}...`);
-
-  const formData = new FormData();
-  formData.append("file", file);
+  configPanel.classList.add("hidden");
+  clearDownloadLink();
 
   try {
-    const payload = await fetchJson("/api/uploads/inspect", {
-      method: "POST",
-      body: formData,
-    });
+    const payload = appConfig.clientUploadEnabled
+      ? await inspectViaBlobUpload(file)
+      : await inspectViaMultipartUpload(file);
+
     state.uploadId = payload.upload_id;
     state.inspection = payload;
 
@@ -86,6 +90,58 @@ processButton.addEventListener("click", async () => {
     processButton.disabled = false;
   }
 });
+
+async function inspectViaMultipartUpload(file) {
+  setUploadStatus(`Inspecting ${file.name}...`);
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return fetchJson("/api/uploads/inspect", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+async function inspectViaBlobUpload(file) {
+  setUploadStatus(`Uploading ${file.name} to secure storage...`);
+
+  const blob = await uploadToBlob(file);
+
+  setUploadStatus(`Inspecting ${file.name}...`);
+  return fetchJson("/api/uploads/inspect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      blob_pathname: blob.pathname,
+      blob_url: blob.url,
+    }),
+  });
+}
+
+async function uploadToBlob(file) {
+  const { upload } = await loadBlobClient();
+  const pathname = `veriphone/uploads/${crypto.randomUUID()}/${sanitizeFilename(file.name)}`;
+
+  return upload(pathname, file, {
+    access: "private",
+    handleUploadUrl: "/api/blob-upload",
+    contentType: file.type || "text/csv",
+    multipart: file.size > 4_000_000,
+    onUploadProgress(progress) {
+      const percentage = Math.round(progress.percentage || 0);
+      setUploadStatus(`Uploading ${file.name}... ${percentage}%`);
+    },
+  });
+}
+
+async function loadBlobClient() {
+  if (!blobClientPromise) {
+    blobClientPromise = import("https://esm.sh/@vercel/blob/client@2.3.3");
+  }
+  return blobClientPromise;
+}
 
 function renderInspection(payload) {
   configPanel.classList.remove("hidden");
@@ -217,9 +273,16 @@ function schedulePoll() {
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
-  const payload = await response.json();
+  let payload = {};
+
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error("The server returned an unreadable response.");
+  }
+
   if (!response.ok || payload.status === "error") {
-    throw new Error(payload.message || "Request failed.");
+    throw new Error(payload.message || payload.error || "Request failed.");
   }
   return payload;
 }
@@ -239,6 +302,15 @@ function clearDownloadLink() {
   downloadLink.href = "#";
   downloadLink.classList.add("disabled");
   downloadLink.setAttribute("aria-disabled", "true");
+}
+
+function sanitizeFilename(value) {
+  return String(value || "upload.csv")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-/, "")
+    .replace(/-$/, "") || "upload.csv";
 }
 
 function escapeHtml(value) {
