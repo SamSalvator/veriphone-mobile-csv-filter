@@ -9,6 +9,8 @@ const appConfig = {
   clientUploadEnabled: document.body.dataset.clientUploadEnabled === "true",
 };
 
+const SESSION_STORAGE_KEY = "veriphone-mobile-filter.state.v1";
+
 let blobClientPromise = null;
 
 const uploadForm = document.getElementById("upload-form");
@@ -36,8 +38,12 @@ uploadForm.addEventListener("submit", async (event) => {
   }
 
   inspectButton.disabled = true;
+  window.clearTimeout(state.pollTimer);
+  state.jobId = null;
   configPanel.classList.add("hidden");
+  jobPanel.classList.add("hidden");
   clearDownloadLink();
+  persistSessionState();
 
   try {
     const payload = appConfig.clientUploadEnabled
@@ -49,6 +55,7 @@ uploadForm.addEventListener("submit", async (event) => {
 
     renderInspection(payload);
     setUploadStatus(`Ready: ${payload.filename} inspected successfully.`);
+    persistSessionState();
   } catch (error) {
     setUploadStatus(error.message, true);
   } finally {
@@ -84,10 +91,48 @@ processButton.addEventListener("click", async () => {
     state.jobId = payload.job_id;
     jobPanel.classList.remove("hidden");
     renderJob(payload);
+    persistSessionState();
     schedulePoll();
   } catch (error) {
     setJobStatus(error.message, true);
     processButton.disabled = false;
+  }
+});
+
+downloadLink.addEventListener("click", async (event) => {
+  event.preventDefault();
+
+  if (downloadLink.classList.contains("disabled")) {
+    return;
+  }
+
+  const downloadUrl = downloadLink.getAttribute("href");
+  if (!downloadUrl || downloadUrl === "#") {
+    return;
+  }
+
+  downloadLink.classList.add("disabled");
+  downloadLink.setAttribute("aria-disabled", "true");
+  downloadLink.textContent = "Preparing download...";
+
+  try {
+    await downloadFilteredCsv(downloadUrl);
+    setJobStatus("Download started.");
+  } catch (error) {
+    setJobStatus(error.message, true);
+  } finally {
+    downloadLink.textContent = "Download filtered CSV";
+    if (state.jobId) {
+      try {
+        const payload = await fetchJson(`/api/jobs/${state.jobId}`);
+        renderJob(payload);
+        if (!["completed", "error"].includes(payload.job_status)) {
+          schedulePoll();
+        }
+      } catch (error) {
+        setJobStatus(error.message, true);
+      }
+    }
   }
 });
 
@@ -165,6 +210,7 @@ function renderInspection(payload) {
 
   renderSampleTable(payload.columns, payload.sample_rows);
   updateSelectedColumnPreview();
+  persistSessionState();
 }
 
 function renderSampleTable(columns, sampleRows) {
@@ -238,6 +284,8 @@ function renderJob(payload) {
   if (payload.job_status === "completed" || payload.job_status === "error") {
     processButton.disabled = false;
   }
+
+  persistSessionState();
 }
 
 function buildStatusText(payload) {
@@ -304,6 +352,140 @@ function clearDownloadLink() {
   downloadLink.setAttribute("aria-disabled", "true");
 }
 
+async function downloadFilteredCsv(downloadUrl) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await fetch(downloadUrl);
+    const contentType = response.headers.get("content-type") || "";
+
+    if (response.ok && !contentType.includes("application/json")) {
+      const blob = await response.blob();
+      const filename =
+        parseDownloadFilename(response.headers.get("content-disposition")) || "filtered-mobile.csv";
+      triggerBrowserDownload(blob, filename);
+      return;
+    }
+
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw new Error("The server returned an unreadable response.");
+    }
+
+    const message = payload.message || payload.error || "Could not download the filtered CSV.";
+    if (response.status === 409) {
+      setJobStatus(message);
+      await wait(1500 * (attempt + 1));
+      continue;
+    }
+
+    throw new Error(message);
+  }
+
+  throw new Error("The filtered CSV is still finalizing. Please retry in a few seconds.");
+}
+
+function triggerBrowserDownload(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
+function parseDownloadFilename(contentDisposition) {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const quotedMatch = contentDisposition.match(/filename=\"([^\"]+)\"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+  return plainMatch?.[1]?.trim() || null;
+}
+
+function persistSessionState() {
+  try {
+    window.sessionStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        uploadId: state.uploadId,
+        inspection: state.inspection,
+        jobId: state.jobId,
+      }),
+    );
+  } catch (error) {
+    console.warn("Could not persist session state.", error);
+  }
+}
+
+function readPersistedState() {
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.warn("Could not read session state.", error);
+    return null;
+  }
+}
+
+function clearPersistedState() {
+  try {
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch (error) {
+    console.warn("Could not clear session state.", error);
+  }
+}
+
+async function restorePersistedState() {
+  const savedState = readPersistedState();
+  if (!savedState) {
+    return;
+  }
+
+  state.uploadId = savedState.uploadId || null;
+  state.inspection = savedState.inspection || null;
+  state.jobId = savedState.jobId || null;
+
+  if (state.inspection) {
+    renderInspection(state.inspection);
+    setUploadStatus(`Restored ${state.inspection.filename || "your last CSV"} from this tab.`);
+  }
+
+  if (!state.jobId) {
+    return;
+  }
+
+  setJobStatus("Restoring the last job...");
+  try {
+    const payload = await fetchJson(`/api/jobs/${state.jobId}`);
+    renderJob(payload);
+    if (!["completed", "error"].includes(payload.job_status)) {
+      schedulePoll();
+    }
+  } catch (error) {
+    clearPersistedState();
+    setJobStatus(error.message, true);
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
+
 function sanitizeFilename(value) {
   return String(value || "upload.csv")
     .trim()
@@ -321,3 +503,5 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+restorePersistedState();

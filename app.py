@@ -28,6 +28,10 @@ class ConfigurationError(RuntimeError):
     """Raised when required runtime configuration is missing."""
 
 
+class JobNotReadyError(RuntimeError):
+    """Raised when a finished-looking job still needs a moment to finalize its export."""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -152,10 +156,11 @@ def create_app() -> Flask:
         try:
             storage = _storage_backend()
             job_record = storage.read_json(_job_manifest_key(job_id))
-            if job_record["status"] not in {"completed", "error"}:
-                client = _build_client()
-                job_record = _refresh_job(job_record, client, storage)
-                storage.write_json(_job_manifest_key(job_id), job_record)
+            needs_refresh = job_record["status"] not in {"completed", "error"} or (
+                job_record["status"] == "completed" and not job_record.get("export_path")
+            )
+            if needs_refresh:
+                job_record = _refresh_and_persist_job(job_record, storage)
 
             return jsonify(_serialize_job(job_record))
         except FileNotFoundError:
@@ -188,38 +193,39 @@ def create_app() -> Flask:
         try:
             storage = _storage_backend()
             job_record = storage.read_json(_job_manifest_key(job_id))
-            export_path = str(job_record.get("export_path", "")).strip()
-            if not export_path:
-                return _api_error("The filtered CSV is not ready yet.", 409)
+            attempted_refresh = False
 
-            download_name = str(job_record.get("export_filename") or Path(export_path).name)
-            if isinstance(storage, LocalStorageBackend):
-                file_path = storage.resolve_path(export_path)
-                if not file_path.exists():
-                    return _api_error("The filtered CSV could not be found.", 404)
+            while True:
+                job_record, refreshed = _ensure_job_downloadable(job_record, storage)
+                attempted_refresh = attempted_refresh or refreshed
 
-                return send_file(
-                    file_path,
-                    as_attachment=True,
-                    download_name=download_name,
-                    mimetype="text/csv",
-                )
+                try:
+                    return _build_download_response(job_record, storage)
+                except JobNotReadyError as error:
+                    return _api_error(str(error), 409)
+                except FileNotFoundError as error:
+                    if attempted_refresh or job_record.get("status") == "error":
+                        return _api_error(
+                            "The filtered CSV is still finalizing. Retry in a few seconds.",
+                            409,
+                        )
 
-            stream, metadata = storage.stream_file(export_path)
-            headers = {
-                "Content-Disposition": f'attachment; filename="{download_name}"',
-                "Cache-Control": str(metadata.get("cache_control", "private, no-store")),
-            }
-            if metadata.get("content_length") is not None:
-                headers["Content-Length"] = str(metadata["content_length"])
+                    job_record = _refresh_and_persist_job(job_record, storage)
+                    attempted_refresh = True
+                except StorageError as error:
+                    if attempted_refresh or job_record.get("status") == "error":
+                        raise error
 
-            return Response(
-                stream_with_context(stream),
-                mimetype=str(metadata.get("content_type") or "text/csv"),
-                headers=headers,
-            )
+                    job_record = _refresh_and_persist_job(job_record, storage)
+                    attempted_refresh = True
         except FileNotFoundError:
             return _api_error("Job not found.", 404)
+        except ConfigurationError as error:
+            return _api_error(str(error), 500)
+        except VeriphoneAPIError as error:
+            return _api_error(error.message, error.status_code)
+        except ResultProcessingError as error:
+            return _api_error(str(error), 500)
         except StorageError as error:
             return _api_error(str(error), 500)
 
@@ -406,6 +412,57 @@ def _refresh_job(
 
     job_record["status"] = "verifying"
     return job_record
+
+
+def _refresh_and_persist_job(job_record: Dict[str, Any], storage: StorageBackend) -> Dict[str, Any]:
+    refreshed_job = _refresh_job(job_record, _build_client(), storage)
+    storage.write_json(_job_manifest_key(refreshed_job["job_id"]), refreshed_job)
+    return refreshed_job
+
+
+def _ensure_job_downloadable(
+    job_record: Dict[str, Any],
+    storage: StorageBackend,
+) -> tuple[Dict[str, Any], bool]:
+    export_path = str(job_record.get("export_path", "")).strip()
+    if export_path or job_record.get("status") == "error":
+        return job_record, False
+
+    refreshed_job = _refresh_and_persist_job(job_record, storage)
+    return refreshed_job, True
+
+
+def _build_download_response(job_record: Dict[str, Any], storage: StorageBackend) -> Response:
+    export_path = str(job_record.get("export_path", "")).strip()
+    if not export_path:
+        raise JobNotReadyError("The filtered CSV is still finalizing. Retry in a few seconds.")
+
+    download_name = str(job_record.get("export_filename") or Path(export_path).name)
+    if isinstance(storage, LocalStorageBackend):
+        file_path = storage.resolve_path(export_path)
+        if not file_path.exists():
+            raise FileNotFoundError(export_path)
+
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="text/csv",
+        )
+
+    stream, metadata = storage.stream_file(export_path)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_name}"',
+        "Cache-Control": str(metadata.get("cache_control", "private, no-store")),
+    }
+    if metadata.get("content_length") is not None:
+        headers["Content-Length"] = str(metadata["content_length"])
+
+    return Response(
+        stream_with_context(stream),
+        mimetype=str(metadata.get("content_type") or "text/csv"),
+        headers=headers,
+    )
 
 
 def _serialize_job(job_record: Dict[str, Any]) -> Dict[str, Any]:
