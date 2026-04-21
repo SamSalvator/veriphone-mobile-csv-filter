@@ -138,7 +138,7 @@ async function uploadToBlob(file) {
 
 async function loadBlobClient() {
   if (!blobClientPromise) {
-    blobClientPromise = import("https://esm.sh/@vercel/blob/client@2.3.3");
+    blobClientPromise = import("/static/vendor/vercel-blob-client.js");
   }
   return blobClientPromise;
 }
