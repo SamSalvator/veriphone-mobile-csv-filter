@@ -20,7 +20,7 @@ from services.veriphone_client import VeriphoneAPIError, VeriphoneClient
 APP_ROOT = Path(__file__).resolve().parent
 TMP_ROOT = APP_ROOT / ".tmp"
 DEFAULT_COUNTRY = "US"
-MAX_FILE_SIZE_MB = 100
+MAX_FILE_SIZE_MB = 1024
 LARGE_TRANSFER_THRESHOLD_BYTES = 4_500_000
 
 

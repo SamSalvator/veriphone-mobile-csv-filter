@@ -27,3 +27,5 @@ Thumbs.db
 # Ignore generated files
 .tmp/
 *.log
+.vercel
+.env*.local
