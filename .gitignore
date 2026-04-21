@@ -29,3 +29,5 @@ Thumbs.db
 *.log
 .vercel
 .env*.local
+.python-version
+uv.lock
